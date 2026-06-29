@@ -53,6 +53,10 @@ def check_status(cookie):
     return info
 
 def is_available(info):
+    # Allow testing even when not yet available (use --force)
+    if os.environ.get("FORCE_RENEW"):
+        log.info("FORCE_RENEW set - attempting renewal anyway")
+        return True
     if not info["opens_at"]:
         return False
     try:
@@ -221,10 +225,9 @@ def main():
         log.info("⏩ Not yet time - next cron check will retry")
         return
     
-    log.info("🎯 Renewal window open! Attempting...")
-    
-    if capsolver:
-        log.info("Capsolver key present - will solve Turnstile")
+    log.info("🎯 Attempting renewal with Playwright...")
+    log.info(f"Proxy: {proxy or 'none'}")
+    log.info(f"Capsolver: {'yes' if capsolver else 'no'}")
     
     success, info = renew_playwright(cookie, proxy, capsolver)
     
