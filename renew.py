@@ -165,27 +165,27 @@ def renew_playwright(cookie, proxy=None, capsolver_key=None, account_name="Free"
         page = ctx.new_page()
         log.info("Loading billing page...")
         try:
-            page.goto(f"{BASE}/a/billings", wait_until="domcontentloaded", timeout=30000)
+            page.goto(f"{BASE}/a/billings", wait_until="domcontentloaded", timeout=60000)
         except:
             pass
+        # Wait for SvelteKit app to hydrate (wait for subscription card text)
         try:
-            page.wait_for_load_state("networkidle", timeout=10000)
+            page.wait_for_selector("text=Subscription", state="visible", timeout=60000)
+            log.info("✅ Page rendered (found subscription card)")
         except:
-            pass
-        page.wait_for_timeout(3000)
-
-        # Diagnostic: check what page loaded
-        try:
-            log.info(f"Page title: {page.title()}")
-            log.info(f"Page URL: {page.url}")
-            has_ts = page.query_selector('[data-sitekey], .cf-turnstile, iframe[src*="turnstile"]')
-            log.info(f"Turnstile visible: {has_ts is not None}")
-            content_preview = page.content()[:500]
-            log.info(f"Content starts: {content_preview[:200]}")
-        except Exception as e:
-            log.info(f"Diag error: {e}")
-
+            log.warning("⚠️ Subscription card not found, page may not have rendered fully")
         page.wait_for_timeout(2000)
+        log.info(f"Page URL: {page.url}")
+        try:
+            has_ts = page.query_selector('[data-sitekey], .cf-turnstile')
+            log.info(f"Turnstile visible: {has_ts is not None}")
+        except:
+            pass
+        try:
+            log.info(f"Title: {page.title()}")
+        except:
+            pass
+
         try:
             page.screenshot(path=screenshot_path, timeout=15000)
         except:
@@ -318,10 +318,10 @@ def main():
             ctx = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", locale="en-US", viewport={"width":1280,"height":800})
             ctx.add_cookies([{"name":"session_token","value":cookie,"domain":"bot-hosting.net","path":"/"}])
             page = ctx.new_page()
-            page.goto(f"{BASE}/a/billings", wait_until="domcontentloaded", timeout=30000)
-            try: page.wait_for_load_state("networkidle", timeout=10000)
+            page.goto(f"{BASE}/a/billings", wait_until="domcontentloaded", timeout=60000)
+            try: page.wait_for_selector("text=Subscription", state="visible", timeout=60000)
             except: pass
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(2000)
             try: page.screenshot(path=screenshot_path, timeout=15000)
             except: pass
             browser.close()
