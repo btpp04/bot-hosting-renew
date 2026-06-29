@@ -1,0 +1,21 @@
+name: BotHosting Renew
+
+on: 
+  workflow_dispatch:
+  schedule:
+    - cron: '30 */6 * * *'
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests playwright && playwright install chromium
+      - run: python3 renew.py --verbose
+        env:
+          SESSION_COOKIE: ${{ secrets.SESSION_COOKIE }}
+          CAPSOLVER_API_KEY: ${{ secrets.CAPSOLVER_API_KEY }}
+          PROXY: ${{ secrets.PROXY }}
