@@ -2,15 +2,13 @@ name: Auto Renew
 
 on:
   schedule:
-    # Run every 6 hours to check if renewal is available
-    - cron: "0 */6 * * *"
-  workflow_dispatch:  # Manual trigger
+    # Check every 6 hours; will only act when renewal window is open
+    - cron: "30 */6 * * *"
+  workflow_dispatch:
 
 jobs:
-  check:
+  renew:
     runs-on: ubuntu-latest
-    outputs:
-      status: ${{ steps.check.outputs.status }}
     steps:
       - uses: actions/checkout@v4
 
@@ -21,38 +19,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests
-
-      - name: Check subscription status
-        id: check
-        env:
-          SESSION_COOKIE: ${{ secrets.SESSION_COOKIE }}
-        run: |
-          python3 renew.py --verbose
-
-  renew:
-    needs: check
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies (full)
-        run: |
           pip install requests playwright
-
-      - name: Install Playwright browser
-        run: |
           playwright install chromium
 
-      - name: Attempt renewal
+      - name: Auto Renew
         env:
           SESSION_COOKIE: ${{ secrets.SESSION_COOKIE }}
           CAPSOLVER_API_KEY: ${{ secrets.CAPSOLVER_API_KEY }}
         run: |
-          python3 renew.py --playwright --verbose
+          python3 renew.py --verbose
