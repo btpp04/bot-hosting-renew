@@ -18,4 +18,6 @@ jobs:
           SESSION_COOKIE: ${{ secrets.SESSION_COOKIE }}
           CAPSOLVER_API_KEY: ${{ secrets.CAPSOLVER_API_KEY }}
           PROXY: ${{ env.PROXY }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           FORCE_RENEW: ""

@@ -24,6 +24,26 @@ def get_cookie():
     if not c: fatal("SESSION_COOKIE not set")
     return c
 
+def tg_notify(msg):
+    """Send Telegram notification."""
+    bot_token = os.environ.get("TG_BOT_TOKEN", "7935239797:AAHuQ9jZt-cNjcgjqQ9HH0JzkSWlD53EttM")
+    chat_id = os.environ.get("TG_CHAT_ID", "644320820")
+    if not bot_token:
+        log.warning("TG_BOT_TOKEN not set, skipping notification")
+        return
+    try:
+        import urllib.request
+        payload = f"chat_id={chat_id}&text={urllib.request.quote(msg)}&parse_mode=HTML&disable_web_page_preview=true"
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            data=payload.encode(),
+            headers={"Content-Type": "application/x-www-form-urlencoded"}
+        )
+        urllib.request.urlopen(req, timeout=10)
+        log.info("TG notification sent")
+    except Exception as e:
+        log.warning(f"TG notify failed: {e}")
+
 def fetch(path, cookie):
     ctx = ssl.create_default_context()
     req = urllib.request.Request(
@@ -249,8 +269,10 @@ def main():
     
     if success:
         log.info("🎉 Renewal completed!")
+        tg_notify("✅ <b>Bot-Hosting Renewal</b>\nFree plan renewed successfully!")
     elif success is False:
         log.info("⏳ Too early, will retry")
+        tg_notify(f"⏳ <b>Bot-Hosting Renewal</b>\nNot yet available (opens {info.get('opens_at','?')[:16]} UTC)")
     else:
         log.warning("⚠️ Check billing page manually")
 
