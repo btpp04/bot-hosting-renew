@@ -3,7 +3,11 @@ name: Auto Renew
 on:
   schedule:
     - cron: "30 */6 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for manual trigger"
+        default: "manual check"
 
 jobs:
   renew:
