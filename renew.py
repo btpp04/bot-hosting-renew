@@ -56,7 +56,7 @@ class BotHostingRenew:
         kwargs.setdefault("timeout", 30)
         
         # Set multiple potential cookie names
-        for name in ["__session", "session", "connect.sid", "token", "sessionid"]:
+        for name in ["session_token", "__session", "session", "connect.sid", "token", "sessionid"]:
             self.session.cookies.set(name, self.session_cookie_value, domain="bot-hosting.net", path="/")
         
         log.debug(f"{method} {url}")
