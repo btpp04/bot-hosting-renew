@@ -265,14 +265,15 @@ def main():
     log.info(f"Proxy: {proxy or 'none'}")
     log.info(f"Capsolver: {'yes' if capsolver else 'no'}")
     
-    success, info = renew_playwright(cookie, proxy, capsolver)
+    success, btn_info = renew_playwright(cookie, proxy, capsolver)
     
     if success:
         log.info("🎉 Renewal completed!")
         tg_notify("✅ <b>Bot-Hosting Renewal</b>\nFree plan renewed successfully!")
     elif success is False:
+        opens_at = info.get("opens_at", "?")
         log.info("⏳ Too early, will retry")
-        tg_notify(f"⏳ <b>Bot-Hosting Renewal</b>\nNot yet available (opens {info.get('opens_at','?')[:16]} UTC)")
+        tg_notify(f"⏳ <b>Bot-Hosting Renewal</b>\nNot yet available (opens {opens_at})")
     else:
         log.warning("⚠️ Check billing page manually")
 
