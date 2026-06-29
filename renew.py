@@ -101,10 +101,15 @@ def renew_playwright(cookie, proxy=None, capsolver_key=None):
         page = ctx.new_page()
         log.info("Loading billing page...")
         try:
-            page.goto(f"{BASE}/a/billings", wait_until="networkidle", timeout=60000)
+            page.goto(f"{BASE}/a/billings", wait_until="domcontentloaded", timeout=30000)
         except Exception as e:
-            log.warning(f"goto timeout/error: {e}")
-        page.wait_for_timeout(5000)
+            log.warning(f"goto timeout: {e}")
+        # Wait a bit for page to render, then stop waiting for network
+        try:
+            page.wait_for_load_state("networkidle", timeout=10000)
+        except:
+            pass
+        page.wait_for_timeout(3000)
         
         renew_btn = page.query_selector("button:has-text('Renew')")
         if not renew_btn:
