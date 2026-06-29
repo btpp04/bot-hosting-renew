@@ -8,4 +8,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: echo "hello"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests playwright && playwright install chromium
+      - run: python3 renew.py --verbose
+        env:
+          SESSION_COOKIE: ${{ secrets.SESSION_COOKIE }}
+          PROXY: ${{ secrets.PROXY }}
+          CAPSOLVER_API_KEY: ${{ secrets.CAPSOLVER_API_KEY }}
