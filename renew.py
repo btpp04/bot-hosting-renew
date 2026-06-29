@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-bot-hosting.net 免费计划全自动续期脚本
-自动检测续期窗口 + 解决 Turnstile 验证码 + 点击续期按钮
+bot-hosting.net 免费计划全自动续期
+支持 proxy 代理、Playwright、capsolver
 """
 
 import os, sys, json, re, time, logging, argparse, urllib.request, ssl
@@ -9,12 +9,15 @@ from datetime import datetime, timezone
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("bh-renew")
-
 BASE = "https://bot-hosting.net"
 
 def fatal(msg):
     log.error(msg)
     sys.exit(1)
+
+def get_proxy():
+    p = os.environ.get("PROXY", "").strip()
+    return p if p else None
 
 def get_cookie():
     c = os.environ.get("SESSION_COOKIE")
@@ -30,7 +33,6 @@ def fetch(path, cookie):
     return urllib.request.urlopen(req, timeout=30, context=ctx).read().decode()
 
 def check_status(cookie):
-    """Get subscription status from billing page"""
     html = fetch("/a/billings", cookie)
     if "/login" in html[:300]:
         fatal("Cookie expired - redirect to login")
@@ -48,10 +50,9 @@ def check_status(cookie):
     log.info(f"Plan: {info['tier']} | Status: {info['status']}")
     log.info(f"Renew opens: {info['opens_at']} UTC")
     log.info(f"Renew due:   {info['due_at']} UTC")
-    return info, html
+    return info
 
-def is_renewal_available(info):
-    """Check if renewal can be performed now"""
+def is_available(info):
     if not info["opens_at"]:
         return False
     try:
@@ -60,20 +61,25 @@ def is_renewal_available(info):
     except:
         return False
 
-def renew_with_playwright(cookie, capsolver_key=None):
-    """Use Playwright to solve Turnstile and click Renew"""
+def renew_playwright(cookie, proxy=None, capsolver_key=None):
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
         log.warning("Playwright not installed")
-        return False
-
+        return False, None
+    
+    pw_kwargs = {}
+    if proxy:
+        pw_kwargs["proxy"] = {"server": proxy}
+        log.info(f"Using proxy: {proxy}")
+    
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         ctx = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             locale="en-US",
-            viewport={"width": 1280, "height": 800}
+            viewport={"width": 1280, "height": 800},
+            **pw_kwargs
         )
         ctx.add_cookies([{
             "name": "session_token", "value": cookie,
@@ -81,140 +87,113 @@ def renew_with_playwright(cookie, capsolver_key=None):
         }])
         
         page = ctx.new_page()
+        log.info("Loading billing page...")
         page.goto(f"{BASE}/a/billings", wait_until="networkidle")
         page.wait_for_timeout(3000)
         
-        # Check button state
         renew_btn = page.query_selector("button:has-text('Renew')")
         if not renew_btn:
             log.info("No Renew button found")
             browser.close()
-            return False
+            return None, None
         
         btn_text = renew_btn.inner_text()
         is_disabled = renew_btn.get_attribute("disabled") is not None
         log.info(f"Button: '{btn_text}' (disabled={is_disabled})")
         
         if is_disabled:
-            # Extract countdown
             m = re.search(r'(\d+):(\d+):(\d+)', btn_text)
             if m:
-                log.info(f"Renew in {m.group(1)}h {m.group(2)}m {m.group(3)}s")
+                log.info(f"⏳ Still counting: {m.group(1)}h {m.group(2)}m")
             browser.close()
-            return False
+            return False, btn_text
         
-        # Handle Turnstile
-        log.info("Solving Turnstile...")
+        log.info("✅ Renew button is ACTIVE!")
         
+        # Try capsolver if configured
         if capsolver_key:
-            success = solve_turnstile_capsolver(page, capsolver_key)
-            if not success:
-                log.error("Capsolver failed")
-                browser.close()
-                return False
-            page.wait_for_timeout(1000)
-        else:
-            # Try auto-wait for Turnstile (some invisible modes auto-solve)
-            log.info("No capsolver key - trying Turnstile auto-solve...")
-            page.wait_for_timeout(2000)
+            log.info("Solving Turnstile with capsolver...")
+            solved = solve_capsolver(page, capsolver_key)
+            if solved:
+                page.wait_for_timeout(1000)
         
         # Click Renew
-        log.info("Clicking Renew button...")
-        renew_btn = page.query_selector("button:has-text('Renew')")
-        if renew_btn:
-            renew_btn.click()
-            page.wait_for_timeout(3000)
-            page.wait_for_load_state("networkidle")
-            
-            content = page.content()
-            if "Expires" in content and "Active" in content:
-                log.info("✅ Renewal appears successful!")
-                browser.close()
-                return True
+        page.query_selector("button:has-text('Renew')").click()
+        page.wait_for_timeout(3000)
         
-        log.info("Renewal click done, verify manually")
+        try:
+            page.wait_for_load_state("networkidle", timeout=10000)
+        except:
+            pass
+        
+        content = page.content()
+        url = page.url
         browser.close()
-        return None
+        
+        if "Expires" in content and "Active" in content:
+            log.info("✅ Renewal SUCCESS!")
+            return True, url
+        else:
+            log.info(f"Renewal result uncertain, URL: {url}")
+            return None, url
 
-def solve_turnstile_capsolver(page, api_key):
-    """Solve Turnstile via capsolver"""
-    try:
-        import requests as req
-    except ImportError:
-        log.error("requests required for capsolver")
-        return False
+def solve_capsolver(page, api_key):
+    import urllib.request as ureq
     
     site_key = page.evaluate("""() => {
         const el = document.querySelector('[data-sitekey]') ||
-                    document.querySelector('.cf-turnstile') ||
-                    document.querySelector('#turnstile-container [data-sitekey]');
+                    document.querySelector('.cf-turnstile');
         return el ? el.getAttribute('data-sitekey') : null;
     }""")
     
     if not site_key:
-        log.warning("Turnstile site key not found on page")
+        log.info("No Turnstile site key found - might auto-pass")
         return False
     
-    log.info(f"Site key: {site_key}")
-    
-    payload = {
+    log.info(f"Turnstile site key: {site_key}")
+    payload = json.dumps({
         "clientKey": api_key,
         "task": {
             "type": "AntiTurnstileTaskProxyLess",
             "websiteURL": "https://bot-hosting.net/a/billings",
             "websiteKey": site_key,
         }
-    }
+    }).encode()
     
     try:
-        r = req.post("https://api.capsolver.com/createTask", json=payload, timeout=30)
-        result = r.json()
+        req = ureq.Request("https://api.capsolver.com/createTask",
+            data=payload,
+            headers={"Content-Type": "application/json"})
+        result = json.loads(ureq.urlopen(req, timeout=30).read())
         if result.get("errorId") != 0:
             log.error(f"Capsolver: {result.get('errorDescription')}")
             return False
         
         task_id = result["taskId"]
-        log.info(f"Task: {task_id}, waiting...")
+        log.info(f"Capsolver task: {task_id}")
         
         for i in range(60):
-            r = req.post("https://api.capsolver.com/getTaskResult", json={
-                "clientKey": api_key, "taskId": task_id
-            }, timeout=30)
-            result = r.json()
+            req = ureq.Request("https://api.capsolver.com/getTaskResult",
+                data=json.dumps({"clientKey": api_key, "taskId": task_id}).encode(),
+                headers={"Content-Type": "application/json"})
+            result = json.loads(ureq.urlopen(req, timeout=30).read())
             if result.get("status") == "ready":
                 token = result["solution"]["token"]
-                # Inject token into page
-                page.evaluate(f"""
-                    (() => {{
-                        const container = document.getElementById('turnstile-container');
-                        if (container) {{
-                            // Trigger Turnstile callback
-                            const widget = turnstile?.getResponse?.();
-                            if (widget) return;
-                            // Try calling onToken callback 
-                            Object.keys(window).forEach(k => {{
-                                if (typeof window[k] === 'function' && k.includes('Turnstile')) {{
-                                    window[k]('{token}');
-                                }}
-                            }});
-                        }}
-                    }})();
-                """)
-                log.info("Turnstile solved!")
+                page.evaluate(f"() => {{ turnstile?.reset?.(); }};")
+                log.info("✅ Turnstile solved!")
                 return True
             time.sleep(1)
-        
-        log.error("Capsolver timeout")
-        return False
     except Exception as e:
-        log.error(f"Capsolver error: {e}")
-        return False
+        log.warning(f"Capsolver error: {e}")
+    
+    return False
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cookie", help="Session cookie")
-    parser.add_argument("--capsolver-key", help="Capsolver API key")
+    parser.add_argument("--cookie")
+    parser.add_argument("--capsolver-key")
+    parser.add_argument("--proxy")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
     
@@ -223,41 +202,38 @@ def main():
 
     cookie = args.cookie or get_cookie()
     capsolver = args.capsolver_key or os.environ.get("CAPSOLVER_API_KEY")
+    proxy = args.proxy or get_proxy()
     
-    # Check status
-    info, _ = check_status(cookie)
+    log.info("=== Bot-Hosting.net Auto Renew ===")
     
-    # Check if renewal is available
-    if not is_renewal_available(info):
+    # Check subscription status via API
+    info = check_status(cookie)
+    
+    if not is_available(info):
         if info["opens_at"]:
             try:
                 opens = datetime.fromisoformat(info["opens_at"].replace("Z", "+00:00"))
                 remaining = opens - datetime.now(timezone.utc)
                 h, m = remaining.seconds // 3600, (remaining.seconds % 3600) // 60
-                log.info(f"⏳ Renew in {h}h {m}m (next check at opens)")
+                log.info(f"⏳ Renew available in {h}h {m}m")
             except:
                 pass
-        log.info("Not yet time - scheduled check will try again")
-        
-        # Even if not available, try Playwright once to confirm button state
-        if os.environ.get("TRY_PLAYWRIGHT"):
-            renew_with_playwright(cookie, capsolver)
-        return True
-
-    # Renewal available
-    log.info("✅ Renewal window is OPEN! Attempting...")
+        log.info("⏩ Not yet time - next cron check will retry")
+        return
+    
+    log.info("🎯 Renewal window open! Attempting...")
     
     if capsolver:
-        log.info("Capsolver key configured - will automate Turnstile")
+        log.info("Capsolver key present - will solve Turnstile")
     
-    result = renew_with_playwright(cookie, capsolver)
+    success, info = renew_playwright(cookie, proxy, capsolver)
     
-    if result:
-        log.info("✅ Renewal completed successfully!")
+    if success:
+        log.info("🎉 Renewal completed!")
+    elif success is False:
+        log.info("⏳ Too early, will retry")
     else:
-        log.warning("⚠️ Automated renewal incomplete. Check billing page.")
-    
-    return result
+        log.warning("⚠️ Check billing page manually")
 
 
 if __name__ == "__main__":

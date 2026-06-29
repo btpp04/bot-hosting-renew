@@ -2,7 +2,6 @@ name: Auto Renew
 
 on:
   schedule:
-    # Check every 6 hours; will only act when renewal window is open
     - cron: "30 */6 * * *"
   workflow_dispatch:
 
@@ -22,9 +21,80 @@ jobs:
           pip install requests playwright
           playwright install chromium
 
+      - name: Start proxy tunnel (hy2/socks5 → local)
+        env:
+          PROXY: ${{ secrets.PROXY }}
+        run: |
+          set -e
+          if [ -z "$PROXY" ]; then
+            echo "PROXY secret not set - running without proxy"
+            echo "PROXY=" >> $GITHUB_ENV
+            exit 0
+          fi
+          
+          if [[ "$PROXY" =~ ^(socks5|http|https):// ]]; then
+            echo "Direct proxy (no tunnel needed)"
+            echo "PROXY=$PROXY" >> $GITHUB_ENV
+            exit 0
+          fi
+          
+          # hy2 → local socks5 tunnel
+          if [[ "$PROXY" =~ ^hysteria2:// ]]; then
+            echo "Setting up hy2 tunnel..."
+            wget -qO sb.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.13.7/sing-box-1.13.7-linux-amd64.tar.gz
+            tar -xzf sb.tar.gz
+            mv sing-box-*/sing-box ./sing-box
+            chmod +x ./sing-box
+            
+            # Parse hy2 URL
+            STRIPPED="${PROXY#hysteria2://}"
+            STRIPPED="${STRIPPED%%#*}"
+            NO_QUERY="${STRIPPED%%\?*}"
+            QUERY="${STRIPPED#*\?}"
+            AUTH_HOST="${NO_QUERY%@*}"
+            HOSTPORT="${NO_QUERY##*@}"
+            USER="${AUTH_HOST%:*}"
+            PASS="${AUTH_HOST#*:}"
+            HOST="${HOSTPORT%:*}"
+            PORT="${HOSTPORT#*:}"
+            
+            PEER=$(echo "$QUERY" | tr '&' '\n' | grep '^peer=' | sed 's/^peer=//')
+            INSECURE=$(echo "$QUERY" | tr '&' '\n' | grep '^insecure=' | sed 's/^insecure=//')
+            ALPN=$(echo "$QUERY" | tr '&' '\n' | grep '^alpn=' | sed 's/^alpn=//')
+            PEER="${PEER:-www.bing.com}"
+            ALPN="${ALPN:-h3}"
+            INSECURE_LINE=""
+            [[ "$INSECURE" == "1" ]] && INSECURE_LINE='"insecure": true,' || true
+            
+            cat > config.json <<'EOF'
+            {
+              "log": {"level": "warn"},
+              "inbounds": [{"type":"socks","tag":"socks-in","listen":"127.0.0.1","listen_port":1080}],
+              "outbounds": [{
+                "type":"hysteria2","tag":"hy2-out",
+                "server":"HOST_PLACEHOLDER","server_port":PORT_PLACEHOLDER,
+                "password":"PASS_PLACEHOLDER",
+                "tls":{"enabled":true,"server_name":"PEER_PLACEHOLDER","alpn":["ALPN_PLACEHOLDER"],INSECURE_LINE_PLACEHOLDER}
+              }]
+            }
+EOF
+            sed -i "s/HOST_PLACEHOLDER/$HOST/g; s/PORT_PLACEHOLDER/$PORT/g; s/PASS_PLACEHOLDER/$PASS/g; s/PEER_PLACEHOLDER/$PEER/g; s/ALPN_PLACEHOLDER/$ALPN/g; s/INSECURE_LINE_PLACEHOLDER/$INSECURE_LINE/g" config.json
+            
+            ./sing-box run -c config.json &
+            sleep 3
+            IP=$(curl -sS --socks5 127.0.0.1:1080 https://api.ipify.org 2>/dev/null || echo "tunnel_failed")
+            echo "Tunnel IP: $IP"
+            echo "PROXY=socks5://127.0.0.1:1080" >> $GITHUB_ENV
+            exit 0
+          fi
+          
+          echo "Unsupported proxy type: ${PROXY:0:20}"
+          echo "PROXY=" >> $GITHUB_ENV
+
       - name: Auto Renew
         env:
           SESSION_COOKIE: ${{ secrets.SESSION_COOKIE }}
           CAPSOLVER_API_KEY: ${{ secrets.CAPSOLVER_API_KEY }}
+          PROXY: ${{ env.PROXY }}
         run: |
           python3 renew.py --verbose
