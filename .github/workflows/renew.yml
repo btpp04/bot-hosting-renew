@@ -1,0 +1,28 @@
+name: Auto Renew
+
+on:
+  schedule:
+    # Run daily at 08:00 UTC (16:00 Beijing) — check if renewal needed
+    - cron: "0 8 * * *"
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Check and renew subscription
+        env:
+          SESSION_COOKIE: ${{ secrets.SESSION_COOKIE }}
+        run: |
+          python3 renew.py --verbose
