@@ -3,7 +3,7 @@ name: Auto Renew
 on:
   schedule:
     - cron: "30 */6 * * *"
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 jobs:
   renew:
