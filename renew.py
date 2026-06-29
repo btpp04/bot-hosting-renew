@@ -4,7 +4,7 @@ bot-hosting.net 免费计划全自动续期
 支持 proxy 代理、Playwright、capsolver、TG截图通知
 """
 
-import os, sys, json, re, time, logging, argparse, urllib.request, ssl
+import os, sys, json, re, time, logging, argparse, urllib.request, ssl, base64
 from datetime import datetime, timezone
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -23,6 +23,33 @@ def get_cookie():
     c = os.environ.get("SESSION_COOKIE")
     if not c: fatal("SESSION_COOKIE not set")
     return c
+
+def parse_jwt(token):
+    """Parse JWT and return payload dict or None."""
+    try:
+        parts = token.split(".")
+        if len(parts) != 3: return None
+        payload = parts[1]
+        pad = 4 - len(payload) % 4
+        if pad: payload += "=" * pad
+        return json.loads(base64.urlsafe_b64decode(payload))
+    except:
+        return None
+
+def check_cookie_expiry(cookie):
+    """Check JWT expiry, return remaining days/hours or None."""
+    data = parse_jwt(cookie)
+    if not data or "exp" not in data:
+        return None
+    exp = datetime.fromtimestamp(data["exp"], tz=timezone.utc)
+    now = datetime.now(timezone.utc)
+    rem = exp - now
+    return {
+        "expires_at": exp,
+        "days": rem.days,
+        "hours": rem.seconds // 3600,
+        "total_hours": rem.days * 24 + rem.seconds // 3600,
+    }
 
 def tg_notify(msg, photo_path=None):
     """Send Telegram notification, optionally with a photo."""
@@ -74,11 +101,11 @@ def check_status(cookie):
     html = fetch("/a/billings", cookie)
     if "/login" in html[:300]:
         fatal("Cookie expired - redirect to login")
-    
+
     def extract(field):
         m = re.search(rf'{field}["\':\s]+["\']([^"\']+)', html)
         return m.group(1) if m else None
-    
+
     info = {
         "tier": extract("accountTierName"),
         "status": extract("status"),
@@ -89,6 +116,13 @@ def check_status(cookie):
     log.info(f"Plan: {info['tier']} | Status: {info['status']}")
     log.info(f"Renew opens: {info['opens_at']} UTC")
     log.info(f"Renew due:   {info['due_at']} UTC")
+
+    # Check cookie expiry
+    exp = check_cookie_expiry(cookie)
+    if exp:
+        log.info(f"Cookie expires: {exp['expires_at']} UTC ({exp['days']}d {exp['hours']}h)")
+        info["cookie_exp"] = exp
+
     return info
 
 def is_available(info):
@@ -140,7 +174,6 @@ def renew_playwright(cookie, proxy=None, capsolver_key=None, account_name="Free"
             pass
         page.wait_for_timeout(3000)
 
-        # Screenshot before anything - capture the subscription card
         page.screenshot(path=screenshot_path)
         log.info(f"Screenshot saved: {screenshot_path}")
 
@@ -199,7 +232,7 @@ def solve_capsolver(page, api_key):
     log.info(f"Turnstile site key: {site_key}")
     payload = json.dumps({
         "clientKey": api_key,
-        "task": {"type": "AntiTurnstileTaskProxyLess", "websiteURL": "https://bot-hosting.net/a/billings", "websiteKey": site_key}
+        "task": {"type": "AntiTurnstileTaskProxyLess", "websiteURL": f"{BASE}/a/billings", "websiteKey": site_key}
     }).encode()
     try:
         req = ureq.Request("https://api.capsolver.com/createTask", data=payload, headers={"Content-Type":"application/json"})
@@ -239,6 +272,16 @@ def main():
     log.info("=== Bot-Hosting.net Auto Renew ===")
     info = check_status(cookie)
 
+    account_name = info.get("tier", "Free") or "Free"
+    uname = info.get("username", "") or ""
+    opens_at = (info.get("opens_at") or "?")[:16]
+
+    # Check cookie expiry - warn if < 2 days left
+    exp = info.get("cookie_exp")
+    cookie_warn = ""
+    if exp and exp.get("total_hours", 999) < 48:
+        cookie_warn = f"\n⚠️ Cookie expires in {exp['days']}d {exp['hours']}h\nPlease re-extract session_token from browser!"
+
     if not is_available(info):
         if info["opens_at"]:
             try:
@@ -249,25 +292,40 @@ def main():
             except:
                 pass
         log.info("⏩ Not yet time - next cron check will retry")
+
+        # Send countdown notification with screenshot
+        log.info("Taking screenshot for countdown notification...")
+        from playwright.sync_api import sync_playwright
+        screenshot_path = "/tmp/bh_countdown.png"
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+            ctx = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", locale="en-US", viewport={"width":1280,"height":800})
+            ctx.add_cookies([{"name":"session_token","value":cookie,"domain":"bot-hosting.net","path":"/"}])
+            page = ctx.new_page()
+            page.goto(f"{BASE}/a/billings", wait_until="domcontentloaded", timeout=30000)
+            try: page.wait_for_load_state("networkidle", timeout=10000)
+            except: pass
+            page.wait_for_timeout(3000)
+            page.screenshot(path=screenshot_path)
+            browser.close()
+
+        tg_msg = f"⏳ <b>Bot-Hosting</b> | {account_name}\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n{uname}\nOpens: {opens_at} UTC{cookie_warn}"
+        tg_notify(tg_msg, screenshot_path)
         return
 
     log.info("🎯 Attempting renewal with Playwright...")
     log.info(f"Proxy: {proxy or 'none'}")
     log.info(f"Capsolver: {'yes' if capsolver else 'no'}")
 
-    account_name = info.get("tier", "Free") or "Free"
-    uname = info.get("username", "") or ""
-    opens_at = (info.get("opens_at") or "?")[:16]
-
     success, screenshot_path = renew_playwright(cookie, proxy, capsolver, account_name)
 
     if success:
         log.info("🎉 Renewal completed!")
-        tg_msg = f"✅ <b>Bot-Hosting</b> | {account_name}\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n{uname}\nRenewed successfully!"
+        tg_msg = f"✅ <b>Bot-Hosting</b> | {account_name}\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n{uname}\nRenewed successfully!{cookie_warn}"
         tg_notify(tg_msg, screenshot_path)
     elif success is False:
         log.info("⏳ Too early, will retry")
-        tg_msg = f"⏳ <b>Bot-Hosting</b> | {account_name}\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n{uname}\nOpens: {opens_at} UTC"
+        tg_msg = f"⏳ <b>Bot-Hosting</b> | {account_name}\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n{uname}\nOpens: {opens_at} UTC{cookie_warn}"
         tg_notify(tg_msg, screenshot_path)
     else:
         log.warning("⚠️ Check billing page manually")
