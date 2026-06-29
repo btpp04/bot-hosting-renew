@@ -78,9 +78,17 @@ def renew_playwright(cookie, proxy=None, capsolver_key=None):
         log.info(f"Using proxy: {proxy}")
     
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+            ]
+        )
         ctx = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
             locale="en-US",
             viewport={"width": 1280, "height": 800},
             **pw_kwargs
@@ -92,8 +100,11 @@ def renew_playwright(cookie, proxy=None, capsolver_key=None):
         
         page = ctx.new_page()
         log.info("Loading billing page...")
-        page.goto(f"{BASE}/a/billings", wait_until="networkidle")
-        page.wait_for_timeout(3000)
+        try:
+            page.goto(f"{BASE}/a/billings", wait_until="networkidle", timeout=60000)
+        except Exception as e:
+            log.warning(f"goto timeout/error: {e}")
+        page.wait_for_timeout(5000)
         
         renew_btn = page.query_selector("button:has-text('Renew')")
         if not renew_btn:
