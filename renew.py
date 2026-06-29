@@ -174,6 +174,17 @@ def renew_playwright(cookie, proxy=None, capsolver_key=None, account_name="Free"
             pass
         page.wait_for_timeout(3000)
 
+        # Diagnostic: check what page loaded
+        try:
+            log.info(f"Page title: {page.title()}")
+            log.info(f"Page URL: {page.url}")
+            has_ts = page.query_selector('[data-sitekey], .cf-turnstile, iframe[src*="turnstile"]')
+            log.info(f"Turnstile visible: {has_ts is not None}")
+            content_preview = page.content()[:500]
+            log.info(f"Content starts: {content_preview[:200]}")
+        except Exception as e:
+            log.info(f"Diag error: {e}")
+
         page.wait_for_timeout(2000)
         try:
             page.screenshot(path=screenshot_path, timeout=15000)
