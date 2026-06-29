@@ -12,8 +12,9 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install requests playwright && playwright install chromium
+      - run: chmod +x proxy-tunnel.sh && bash proxy-tunnel.sh "${{ secrets.PROXY }}"
       - run: python3 renew.py --verbose
         env:
           SESSION_COOKIE: ${{ secrets.SESSION_COOKIE }}
-          PROXY: ${{ secrets.PROXY }}
           CAPSOLVER_API_KEY: ${{ secrets.CAPSOLVER_API_KEY }}
+          PROXY: ${{ env.PROXY }}
