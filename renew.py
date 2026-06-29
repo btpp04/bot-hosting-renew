@@ -174,7 +174,11 @@ def renew_playwright(cookie, proxy=None, capsolver_key=None, account_name="Free"
             pass
         page.wait_for_timeout(3000)
 
-        page.screenshot(path=screenshot_path)
+        page.wait_for_timeout(2000)
+        try:
+            page.screenshot(path=screenshot_path, timeout=15000)
+        except:
+            pass
         log.info(f"Screenshot saved: {screenshot_path}")
 
         renew_btn = page.query_selector("button:has-text('Renew')")
@@ -210,7 +214,8 @@ def renew_playwright(cookie, proxy=None, capsolver_key=None, account_name="Free"
 
         content = page.content()
         url = page.url
-        page.screenshot(path=screenshot_path)
+        try: page.screenshot(path=screenshot_path, timeout=15000)
+        except: pass
         browser.close()
 
         if "Expires" in content and "Active" in content:
@@ -306,7 +311,8 @@ def main():
             try: page.wait_for_load_state("networkidle", timeout=10000)
             except: pass
             page.wait_for_timeout(3000)
-            page.screenshot(path=screenshot_path)
+            try: page.screenshot(path=screenshot_path, timeout=15000)
+            except: pass
             browser.close()
 
         tg_msg = f"⏳ <b>Bot-Hosting</b> | {account_name}\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n{uname}\nOpens: {opens_at} UTC{cookie_warn}"
