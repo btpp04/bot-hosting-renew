@@ -3,7 +3,10 @@
 set -e
 
 PROXY="$1"
+echo "DEBUG: proxy input length=${#PROXY} first10=${PROXY:0:10}"
+echo "DEBUG: GITHUB_ENV=$GITHUB_ENV"
 if [ -z "$PROXY" ]; then
+  echo "DEBUG: PROXY empty, setting empty"
   echo "PROXY=" >> $GITHUB_ENV
   exit 0
 fi
