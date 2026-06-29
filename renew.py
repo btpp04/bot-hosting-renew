@@ -165,12 +165,12 @@ def renew_playwright(cookie, proxy=None, capsolver_key=None, account_name="Free"
         page = ctx.new_page()
         log.info("Loading billing page...")
         try:
-            page.goto(f"{BASE}/a/billings", wait_until="domcontentloaded", timeout=60000)
+            page.goto(f"{BASE}/a/billings", wait_until="domcontentloaded", timeout=30000)
         except:
             pass
-        # Wait for SvelteKit app to hydrate (wait for subscription card text)
+        # Wait for SvelteKit app to hydrate
         try:
-            page.wait_for_selector("text=Subscription", state="visible", timeout=60000)
+            page.wait_for_selector("text=Subscription", state="visible", timeout=15000)
             log.info("✅ Page rendered (found subscription card)")
         except:
             log.warning("⚠️ Subscription card not found, page may not have rendered fully")
