@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 bot-hosting.net 免费计划全自动续期
-支持 proxy 代理、Playwright、capsolver
+支持 proxy 代理、Playwright、capsolver、TG截图通知
 """
 
 import os, sys, json, re, time, logging, argparse, urllib.request, ssl
@@ -24,23 +24,41 @@ def get_cookie():
     if not c: fatal("SESSION_COOKIE not set")
     return c
 
-def tg_notify(msg):
-    """Send Telegram notification."""
+def tg_notify(msg, photo_path=None):
+    """Send Telegram notification, optionally with a photo."""
     bot_token = os.environ.get("TG_BOT_TOKEN", "7935239797:AAHuQ9jZt-cNjcgjqQ9HH0JzkSWlD53EttM")
     chat_id = os.environ.get("TG_CHAT_ID", "644320820")
     if not bot_token:
-        log.warning("TG_BOT_TOKEN not set, skipping notification")
+        log.warning("TG_BOT_TOKEN not set, skipping")
         return
     try:
-        import urllib.request
-        payload = f"chat_id={chat_id}&text={urllib.request.quote(msg)}&parse_mode=HTML&disable_web_page_preview=true"
-        req = urllib.request.Request(
-            f"https://api.telegram.org/bot{bot_token}/sendMessage",
-            data=payload.encode(),
-            headers={"Content-Type": "application/x-www-form-urlencoded"}
-        )
-        urllib.request.urlopen(req, timeout=10)
-        log.info("TG notification sent")
+        if photo_path and os.path.exists(photo_path):
+            boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+            with open(photo_path, "rb") as f:
+                img_data = f.read()
+            body = (
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{chat_id}\r\n"
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n{msg}\r\n"
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"parse_mode\"\r\n\r\nHTML\r\n"
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"screenshot.png\"\r\n"
+                f"Content-Type: image/png\r\n\r\n"
+            ).encode() + img_data + f"\r\n--{boundary}--\r\n".encode()
+            req = urllib.request.Request(
+                f"https://api.telegram.org/bot{bot_token}/sendPhoto",
+                data=body,
+                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}
+            )
+            urllib.request.urlopen(req, timeout=30)
+            log.info("TG photo sent")
+        else:
+            payload = f"chat_id={chat_id}&text={urllib.request.quote(msg)}&parse_mode=HTML&disable_web_page_preview=true"
+            req = urllib.request.Request(
+                f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                data=payload.encode(),
+                headers={"Content-Type": "application/x-www-form-urlencoded"}
+            )
+            urllib.request.urlopen(req, timeout=10)
+            log.info("TG text sent")
     except Exception as e:
         log.warning(f"TG notify failed: {e}")
 
@@ -66,6 +84,7 @@ def check_status(cookie):
         "status": extract("status"),
         "opens_at": extract("freeRenewalOpensAt"),
         "due_at": extract("freeRenewalDueAt"),
+        "username": extract("username"),
     }
     log.info(f"Plan: {info['tier']} | Status: {info['status']}")
     log.info(f"Renew opens: {info['opens_at']} UTC")
@@ -73,7 +92,6 @@ def check_status(cookie):
     return info
 
 def is_available(info):
-    # Allow testing even when not yet available (use --force)
     if os.environ.get("FORCE_RENEW"):
         log.info("FORCE_RENEW set - attempting renewal anyway")
         return True
@@ -85,149 +103,124 @@ def is_available(info):
     except:
         return False
 
-def renew_playwright(cookie, proxy=None, capsolver_key=None):
+def renew_playwright(cookie, proxy=None, capsolver_key=None, account_name="Free"):
+    """Returns (success_bool or None, screenshot_path or None)."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
         log.warning("Playwright not installed")
         return False, None
-    
+
+    screenshot_path = f"/tmp/bh_screenshot_{account_name}.png"
     pw_kwargs = {}
     if proxy:
         pw_kwargs["proxy"] = {"server": proxy}
         log.info(f"Using proxy: {proxy}")
-    
+
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-            ]
+            args=["--disable-blink-features=AutomationControlled","--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage"]
         )
         ctx = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-            locale="en-US",
-            viewport={"width": 1280, "height": 800},
-            **pw_kwargs
+            locale="en-US", viewport={"width": 1280, "height": 800}, **pw_kwargs
         )
-        ctx.add_cookies([{
-            "name": "session_token", "value": cookie,
-            "domain": "bot-hosting.net", "path": "/",
-        }])
-        
+        ctx.add_cookies([{"name":"session_token","value":cookie,"domain":"bot-hosting.net","path":"/"}])
+
         page = ctx.new_page()
         log.info("Loading billing page...")
         try:
             page.goto(f"{BASE}/a/billings", wait_until="domcontentloaded", timeout=30000)
-        except Exception as e:
-            log.warning(f"goto timeout: {e}")
-        # Wait a bit for page to render, then stop waiting for network
+        except:
+            pass
         try:
             page.wait_for_load_state("networkidle", timeout=10000)
         except:
             pass
         page.wait_for_timeout(3000)
-        
+
+        # Screenshot before anything - capture the subscription card
+        page.screenshot(path=screenshot_path)
+        log.info(f"Screenshot saved: {screenshot_path}")
+
         renew_btn = page.query_selector("button:has-text('Renew')")
         if not renew_btn:
             log.info("No Renew button found")
             browser.close()
-            return None, None
-        
+            return None, screenshot_path
+
         btn_text = renew_btn.inner_text()
         is_disabled = renew_btn.get_attribute("disabled") is not None
         log.info(f"Button: '{btn_text}' (disabled={is_disabled})")
-        
+
         if is_disabled:
             m = re.search(r'(\d+):(\d+):(\d+)', btn_text)
             if m:
                 log.info(f"⏳ Still counting: {m.group(1)}h {m.group(2)}m")
             browser.close()
-            return False, btn_text
-        
+            return False, screenshot_path
+
         log.info("✅ Renew button is ACTIVE!")
-        
-        # Try capsolver if configured
+
         if capsolver_key:
-            log.info("Solving Turnstile with capsolver...")
             solved = solve_capsolver(page, capsolver_key)
             if solved:
                 page.wait_for_timeout(1000)
-        
-        # Click Renew
+
         page.query_selector("button:has-text('Renew')").click()
         page.wait_for_timeout(3000)
-        
         try:
             page.wait_for_load_state("networkidle", timeout=10000)
         except:
             pass
-        
+
         content = page.content()
         url = page.url
+        page.screenshot(path=screenshot_path)
         browser.close()
-        
+
         if "Expires" in content and "Active" in content:
             log.info("✅ Renewal SUCCESS!")
-            return True, url
+            return True, screenshot_path
         else:
             log.info(f"Renewal result uncertain, URL: {url}")
-            return None, url
+            return None, screenshot_path
 
 def solve_capsolver(page, api_key):
     import urllib.request as ureq
-    
     site_key = page.evaluate("""() => {
-        const el = document.querySelector('[data-sitekey]') ||
-                    document.querySelector('.cf-turnstile');
+        const el = document.querySelector('[data-sitekey]') || document.querySelector('.cf-turnstile');
         return el ? el.getAttribute('data-sitekey') : null;
     }""")
-    
     if not site_key:
-        log.info("No Turnstile site key found - might auto-pass")
+        log.info("No Turnstile site key found")
         return False
-    
     log.info(f"Turnstile site key: {site_key}")
     payload = json.dumps({
         "clientKey": api_key,
-        "task": {
-            "type": "AntiTurnstileTaskProxyLess",
-            "websiteURL": "https://bot-hosting.net/a/billings",
-            "websiteKey": site_key,
-        }
+        "task": {"type": "AntiTurnstileTaskProxyLess", "websiteURL": "https://bot-hosting.net/a/billings", "websiteKey": site_key}
     }).encode()
-    
     try:
-        req = ureq.Request("https://api.capsolver.com/createTask",
-            data=payload,
-            headers={"Content-Type": "application/json"})
+        req = ureq.Request("https://api.capsolver.com/createTask", data=payload, headers={"Content-Type":"application/json"})
         result = json.loads(ureq.urlopen(req, timeout=30).read())
         if result.get("errorId") != 0:
             log.error(f"Capsolver: {result.get('errorDescription')}")
             return False
-        
         task_id = result["taskId"]
         log.info(f"Capsolver task: {task_id}")
-        
         for i in range(60):
             req = ureq.Request("https://api.capsolver.com/getTaskResult",
-                data=json.dumps({"clientKey": api_key, "taskId": task_id}).encode(),
-                headers={"Content-Type": "application/json"})
+                data=json.dumps({"clientKey":api_key,"taskId":task_id}).encode(),
+                headers={"Content-Type":"application/json"})
             result = json.loads(ureq.urlopen(req, timeout=30).read())
             if result.get("status") == "ready":
-                token = result["solution"]["token"]
-                page.evaluate(f"() => {{ turnstile?.reset?.(); }};")
-                log.info("✅ Turnstile solved!")
+                log.info("Turnstile solved!")
                 return True
             time.sleep(1)
     except Exception as e:
         log.warning(f"Capsolver error: {e}")
-    
     return False
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -236,19 +229,16 @@ def main():
     parser.add_argument("--proxy")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
-    
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
     cookie = args.cookie or get_cookie()
     capsolver = args.capsolver_key or os.environ.get("CAPSOLVER_API_KEY")
     proxy = args.proxy or get_proxy()
-    
+
     log.info("=== Bot-Hosting.net Auto Renew ===")
-    
-    # Check subscription status via API
     info = check_status(cookie)
-    
+
     if not is_available(info):
         if info["opens_at"]:
             try:
@@ -260,23 +250,27 @@ def main():
                 pass
         log.info("⏩ Not yet time - next cron check will retry")
         return
-    
+
     log.info("🎯 Attempting renewal with Playwright...")
     log.info(f"Proxy: {proxy or 'none'}")
     log.info(f"Capsolver: {'yes' if capsolver else 'no'}")
-    
-    success, btn_info = renew_playwright(cookie, proxy, capsolver)
-    
+
+    account_name = info.get("tier", "Free") or "Free"
+    uname = info.get("username", "") or ""
+    opens_at = (info.get("opens_at") or "?")[:16]
+
+    success, screenshot_path = renew_playwright(cookie, proxy, capsolver, account_name)
+
     if success:
         log.info("🎉 Renewal completed!")
-        tg_notify("✅ <b>Bot-Hosting Renewal</b>\nFree plan renewed successfully!")
+        tg_msg = f"✅ <b>Bot-Hosting</b> | {account_name}\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n{uname}\nRenewed successfully!"
+        tg_notify(tg_msg, screenshot_path)
     elif success is False:
-        opens_at = info.get("opens_at", "?")
         log.info("⏳ Too early, will retry")
-        tg_notify(f"⏳ <b>Bot-Hosting Renewal</b>\nNot yet available (opens {opens_at})")
+        tg_msg = f"⏳ <b>Bot-Hosting</b> | {account_name}\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n{uname}\nOpens: {opens_at} UTC"
+        tg_notify(tg_msg, screenshot_path)
     else:
         log.warning("⚠️ Check billing page manually")
-
 
 if __name__ == "__main__":
     main()
